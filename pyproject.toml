@@ -1,0 +1,23 @@
+[project]
+name = "eyesopenscan"
+version = "0.1.0"
+description = "Find eyes-open and strong-movement events in overnight IR video (seizure review aid)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "mediapipe>=0.10.14",
+    "opencv-python>=4.9",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "pandas",
+]
+
+[project.scripts]
+eyesopenscan = "eyesopenscan.cli:main"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

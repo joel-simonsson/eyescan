@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+models/*.task
+out/
+*.mp4
+*.mkv
+*.avi
+.DS_Store
