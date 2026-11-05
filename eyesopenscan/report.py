@@ -163,12 +163,21 @@ def timeline_png(
         ax.legend(loc="upper right", fontsize=7)
 
     ax = axes[i]
-    for e in events:
-        ax.axvspan(h(e.start), h(max(e.end, e.start + 20)), color=KIND_COLORS[e.kind], alpha=0.8, lw=0)
+    # Short events would be invisible on an 8 h axis, so give each band a
+    # minimum width relative to the recording length - never past its end.
+    min_w = 0.0025 * duration if duration > 0 else 0.0
+    for n, e in enumerate(events, 1):
+        end = max(e.end, e.start + min_w)
+        if duration > 0:
+            end = min(end, duration)
+        ax.axvspan(h(e.start), h(end), ymax=0.8, color=KIND_COLORS[e.kind], alpha=0.85, lw=0)
+        ax.text(h((e.start + end) / 2), 0.9, f"#{n} {e.confidence}", ha="center", va="center",
+                fontsize=7, transform=ax.get_xaxis_transform(), clip_on=True)
     ax.set_yticks([])
     ax.set_ylabel("events")
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in KIND_COLORS.values()]
-    ax.legend(handles, ["eyes + motion", "eyes open", "motion"], loc="upper right", fontsize=7, ncol=3)
+    ax.legend(handles, ["eyes + motion (high)", "eyes only (medium)", "motion only (medium if rhythmic)"],
+              loc="upper center", bbox_to_anchor=(0.5, -0.32), fontsize=7, ncol=3, frameon=False)
     for a in axes:
         for gs, ge in gaps or []:
             a.axvspan(h(gs), h(ge), color="#f2c4c4", alpha=0.5, lw=0, hatch="//")

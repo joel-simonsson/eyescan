@@ -17,12 +17,16 @@ class Params:
     close_thr: float | None = None  # EAR below this -> eyes closing (None = auto)
     eye_smooth_s: float = 1.0  # rolling-median window over EAR
     eye_min_dur_s: float = 2.0  # ignore shorter openings (blinks, twitches)
+    eye_join_gap_s: float = 1.0  # bridge brief dips/face dropouts before the min-duration check
     # motion
     motion_smooth_s: float = 0.5
     motion_baseline_s: float = 300.0  # rolling baseline window
     motion_k: float = 6.0  # threshold = baseline + k * robust sigma
     motion_min_abs: float = 0.02  # ...but at least this fraction of ROI pixels
     motion_min_dur_s: float = 3.0
+    # Jerking comes in bursts with short pauses; bursts closer than this are one
+    # movement episode, judged against motion_min_dur_s as a whole.
+    motion_join_gap_s: float = 2.0
     # fusion
     merge_gap_s: float = 3.0  # join events separated by less than this
     min_event_s: float = 2.0
@@ -125,7 +129,8 @@ def analyze_eyes(t: np.ndarray, ear: np.ndarray, face: np.ndarray, p: Params) ->
         lo = hi
 
     mask = hysteresis(sm, hi, lo)
-    iv = filter_min_duration(mask_to_intervals(t, mask, dt), p.eye_min_dur_s)
+    iv = merge_intervals(mask_to_intervals(t, mask, dt), p.eye_join_gap_s)
+    iv = filter_min_duration(iv, p.eye_min_dur_s)
     face_frac = float(np.mean(face)) if len(face) else 0.0
     return EyeAnalysis(sm, mask, hi, lo, src, iv, face_frac)
 
@@ -158,7 +163,8 @@ def analyze_motion(t: np.ndarray, energy: np.ndarray, p: Params) -> MotionAnalys
     thr = np.maximum(med + p.motion_k * 1.4826 * mad, p.motion_min_abs).to_numpy()
     smv = sm.to_numpy()
     active = np.nan_to_num(smv, nan=0.0) > thr
-    iv = filter_min_duration(mask_to_intervals(t, active, dt), p.motion_min_dur_s)
+    iv = merge_intervals(mask_to_intervals(t, active, dt), p.motion_join_gap_s)
+    iv = filter_min_duration(iv, p.motion_min_dur_s)
     return MotionAnalysis(smv, thr, active, iv)
 
 
