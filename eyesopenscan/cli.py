@@ -4,7 +4,8 @@
   eyesopenscan analyze OUT [threshold opts]   re-run event detection on saved signals
   eyesopenscan calibrate VIDEO --closed A-B --open C-D
   eyesopenscan debug VIDEO --at T --duration S   overlay video for tuning
-  eyesopenscan pick-roi VIDEO --at T          drag a box to get x,y,w,h
+  eyesopenscan live RTSP_URL [--until 07:30]  analyze a camera stream overnight
+  eyesopenscan pick-roi VIDEO|URL --at T      drag a box to get x,y,w,h
 """
 
 from __future__ import annotations
@@ -20,7 +21,9 @@ import numpy as np
 from .events import Params
 from .eyes import DEFAULT_MODEL, EyeDetector
 from .pipeline import ExtractOptions, analyze, extract
-from .video import fmt_time, iter_frames, parse_range, parse_roi, parse_time, probe, read_frame_at
+from .video import (
+    fmt_time, iter_frames, parse_range, parse_roi, parse_time, parse_until, probe, read_frame_at,
+)
 
 
 def _add_threshold_args(ap: argparse.ArgumentParser) -> None:
@@ -171,11 +174,30 @@ def cmd_debug(a) -> None:
     print(f"wrote {n} frames to {a.out}", file=sys.stderr)
 
 
+def cmd_live(a) -> None:
+    import datetime as _dt
+
+    from .live import LiveOptions, LiveSession
+
+    out = a.out or Path("out") / f"live-{_dt.datetime.now():%Y-%m-%d_%H%M}"
+    if (out / "signals.npz").exists():
+        sys.exit(f"{out} already contains a session; choose another -o")
+    o = LiveOptions(
+        url=a.url, out=out, until=parse_until(a.until) if a.until else None,
+        eye_fps=a.eye_fps, motion_fps=a.motion_fps, face_roi=parse_roi(a.face_roi),
+        body_roi=parse_roi(a.body_roi), rotations=a.rotations, segment_s=a.segment_s,
+        retention_s=a.retention_min * 60, warmup_s=a.warmup_min * 60,
+        transport=a.rtsp_transport, model=a.model, checkpoint_every_s=a.checkpoint_min * 60, clip_pad=a.clip_pad, params=_params(a),
+    )
+    LiveSession(o).run()
+
+
 def cmd_pick_roi(a) -> None:
     import cv2
 
-    img = read_frame_at(a.video, parse_time(a.at))
-    snap = a.video.with_suffix(".roi.jpg")
+    is_url = "://" in a.video
+    img = read_frame_at(a.video, 0.0 if is_url else parse_time(a.at))
+    snap = Path("roi.jpg") if is_url else Path(a.video).with_suffix(".roi.jpg")
     cv2.imwrite(str(snap), img)
     print(f"saved reference frame {snap} ({img.shape[1]}x{img.shape[0]})", file=sys.stderr)
     disp = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
@@ -234,8 +256,29 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("-o", "--out", type=Path, default=Path("debug.mp4"))
     s.set_defaults(fn=cmd_debug)
 
+    s = sub.add_parser("live", help="analyze an RTSP camera stream until Ctrl+C or --until")
+    s.add_argument("url", help="e.g. rtsp://user:pass@192.168.1.50:554/stream1")
+    s.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    s.add_argument("--rotations", default="auto")
+    s.add_argument("--face-roi", help="x,y,w,h crop around the pillow/face (see pick-roi)")
+    s.add_argument("--body-roi", help="x,y,w,h region for motion detection")
+    s.add_argument("-o", "--out", type=Path, help="output dir (default out/live-<date>_<time>)")
+    s.add_argument("--until", help="stop automatically: '07:30' (next occurrence), '+8h', or ISO datetime")
+    s.add_argument("--eye-fps", type=float, default=5.0)
+    s.add_argument("--motion-fps", type=float, default=15.0)
+    s.add_argument("--segment-s", type=float, default=30.0, help="buffer segment length")
+    s.add_argument("--retention-min", type=float, default=5.0,
+                   help="minutes of un-flagged video kept in the rolling buffer (default %(default)s)")
+    s.add_argument("--warmup-min", type=float, default=5.0,
+                   help="keep all video for the first N minutes while baselines settle")
+    s.add_argument("--rtsp-transport", choices=["tcp", "udp"], default="tcp")
+    s.add_argument("--checkpoint-min", type=float, default=5.0,
+                   help="save signals every N minutes, so a crash loses little (default %(default)s)")
+    _add_threshold_args(s)
+    s.set_defaults(fn=cmd_live)
+
     s = sub.add_parser("pick-roi", help="drag a box on a frame and print x,y,w,h")
-    s.add_argument("video", type=Path)
+    s.add_argument("video", help="video file or stream URL")
     s.add_argument("--at", default="0")
     s.set_defaults(fn=cmd_pick_roi)
 

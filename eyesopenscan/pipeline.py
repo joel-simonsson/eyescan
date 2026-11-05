@@ -6,7 +6,7 @@ import datetime as dt
 import json
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -68,14 +68,9 @@ def extract(video: Path, out: Path, o: ExtractOptions) -> None:
         if det is not None:
             det.close()
 
-    e = np.array(eye_rows, dtype=float).reshape(-1, 7)
-    m = np.array(mot_rows, dtype=float).reshape(-1, 2)
-    np.savez_compressed(
-        out / "signals.npz",
-        t_eye=e[:, 0], face=e[:, 1].astype(bool), ear=e[:, 2], ear_a=e[:, 3], ear_b=e[:, 4],
-        blink=e[:, 5], rotation=e[:, 6], t_mot=m[:, 0], energy=m[:, 1],
-    )
-    meta = {
+    save_signals(out, eye_rows, mot_rows, {
+        "source": "file",
+        "status": "complete",
         "video": str(video.resolve()),
         "fps": info.fps,
         "duration": max(t, info.duration if o.end is None else 0.0),
@@ -87,10 +82,48 @@ def extract(video: Path, out: Path, o: ExtractOptions) -> None:
         "face_roi": o.face_roi,
         "body_roi": o.body_roi,
         "processing_s": round(time.time() - t0, 1),
-    }
-    (out / "meta.json").write_text(json.dumps(meta, indent=2))
+    })
     print(f"extracted {len(eye_rows)} eye samples, {len(mot_rows)} motion samples "
           f"in {fmt_time(time.time() - t0)}", file=sys.stderr)
+
+
+def save_signals(out: Path, eye_rows: list, mot_rows: list, meta: dict) -> None:
+    """Write signals.npz + meta.json atomically (also used for live checkpoints)."""
+    out.mkdir(parents=True, exist_ok=True)
+    e = np.array(eye_rows, dtype=float).reshape(-1, 7)
+    m = np.array(mot_rows, dtype=float).reshape(-1, 2)
+    tmp = out / "signals.tmp.npz"
+    np.savez_compressed(
+        tmp,
+        t_eye=e[:, 0], face=e[:, 1].astype(bool), ear=e[:, 2], ear_a=e[:, 3], ear_b=e[:, 4],
+        blink=e[:, 5], rotation=e[:, 6], t_mot=m[:, 0], energy=m[:, 1],
+    )
+    tmp.replace(out / "signals.npz")
+    tmpm = out / "meta.tmp.json"
+    tmpm.write_text(json.dumps(meta, indent=2))
+    tmpm.replace(out / "meta.json")
+
+
+@dataclass
+class AnalyzeResult:
+    events: list
+    missing_clips: list[int] = field(default_factory=list)
+
+
+def _clip_exporter(out: Path, meta: dict):
+    """Returns export(start, end, pad, dst) -> bool, or None if no video exists."""
+    if meta.get("source") == "live":
+        from .live import SegmentRing
+
+        buf = out / "buffer"
+        if not (buf / "conns.json").exists():
+            return None
+        ring = SegmentRing(buf)
+        return ring.export_clip
+    video = Path(meta["video"])
+    if not video.exists():
+        return None
+    return lambda s, e, pad, dst: export_clip(video, dst, s, e, pad)
 
 
 def analyze(
@@ -99,7 +132,7 @@ def analyze(
     start_clock: dt.datetime | None = None,
     clips: bool = True,
     clip_pad: float = 10.0,
-) -> list:
+) -> AnalyzeResult:
     """Events, CSV, summary and plot from out/signals.npz. Cheap to re-run."""
     meta = json.loads((out / "meta.json").read_text())
     s = np.load(out / "signals.npz")
@@ -114,23 +147,36 @@ def analyze(
 
     df = report.events_frame(events, start_clock)
     df.to_csv(out / "events.csv", index=False)
-    txt = report.summary_text(events, meta["video"], meta["duration"], eyes, start_clock)
-    (out / "summary.txt").write_text(txt)
     (out / "params.json").write_text(json.dumps(p.to_dict(), indent=2))
-    report.timeline_png(out / "timeline.png", events, t_eye, eyes, face, t_mot, motion, meta["duration"])
+    report.timeline_png(out / "timeline.png", events, t_eye, eyes, face, t_mot, motion,
+                        meta["duration"], gaps=meta.get("gaps") or [])
 
+    missing: list[int] = []
+    clip_note = ""
     if clips and events:
-        cdir = out / "clips"
-        cdir.mkdir(exist_ok=True)
-        for old in cdir.glob("event_*.mp4"):
-            old.unlink()
-        video = Path(meta["video"])
-        for i, e in enumerate(events, 1):
-            name = f"event_{i:02d}_{fmt_time(e.start).replace(':', '-')}_{e.kind}.mp4"
-            print(f"  clip {i}/{len(events)}: {name}", file=sys.stderr, flush=True)
-            if not export_clip(video, cdir / name, e.start, e.end, clip_pad):
-                print("  (ffmpeg missing or failed, skipping clips)", file=sys.stderr)
-                break
+        exporter = _clip_exporter(out, meta)
+        if exporter is None:
+            clip_note = ("source video/buffer no longer exists - existing clips/ left untouched"
+                         if (out / "clips").exists() else "source video/buffer not found - no clips")
+            print(f"  ({clip_note})", file=sys.stderr)
+        else:
+            cdir = out / "clips"
+            cdir.mkdir(exist_ok=True)
+            for old in cdir.glob("event_*.mp4"):
+                old.unlink()
+            for i, e in enumerate(events, 1):
+                name = f"event_{i:02d}_{fmt_time(e.start).replace(':', '-')}_{e.kind}.mp4"
+                if start_clock is not None:
+                    clock = (start_clock + dt.timedelta(seconds=e.start)).strftime("%H-%M-%S")
+                    name = f"event_{i:02d}_{clock}_{e.kind}.mp4"
+                print(f"  clip {i}/{len(events)}: {name}", file=sys.stderr, flush=True)
+                if not exporter(e.start, e.end, clip_pad, cdir / name):
+                    missing.append(i)
 
+    txt = report.summary_text(events, meta["video"], meta["duration"], eyes, start_clock,
+                              gaps=meta.get("gaps") or [], missing_clips=missing,
+                              reconnects=meta.get("reconnects", 0), note=clip_note,
+                              status=meta.get("status", "complete"))
+    (out / "summary.txt").write_text(txt)
     print(txt)
-    return events
+    return AnalyzeResult(events, missing)

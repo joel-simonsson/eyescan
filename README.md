@@ -41,6 +41,44 @@ Optional regions (draw a box with `uv run eyesopenscan pick-roi night.mp4 --at 0
 - `--body-roi x,y,w,h`: limits motion detection to the bed, which ignores a
   partner, pets, curtains and so on.
 
+## Live mode (camera stream, overnight)
+
+Start it in the evening. In the morning press **Ctrl+C**, or let `--until`
+stop it by itself. Either way you get the same report and clips as `scan`:
+
+```sh
+uv run eyesopenscan live "rtsp://USER:PASS@192.168.1.50:554/stream1" \
+    --calibration calibration.json --until 07:30
+```
+
+- **Camera URL:** enable RTSP or "camera account" in the camera's app. Tapo:
+  `rtsp://user:pass@IP:554/stream1`. Reolink: `rtsp://user:pass@IP:554/h264Preview_01_main`.
+  Eufy: enable RTSP in the app (it shows the URL). Use the camera's *main*
+  (high-resolution) stream, because the eyes need the pixels. Passwords are
+  never written to logs or `meta.json`.
+- **Video is clips only, not the whole night.** The stream is copied without
+  re-encoding into 30 s segments in a rolling buffer. Segments older than 5 min
+  (`--retention-min`) are deleted unless something suspicious happened in them,
+  meaning eyes possibly open or movement. When the session stops, the normal
+  analysis runs, a clip is cut for each event, and the buffer is deleted.
+  - Disk use while running is about 5 minutes of stream plus the flagged moments.
+  - The first 5 minutes are always kept while the baselines settle.
+- **Stopping:**
+  - Ctrl+C, SIGTERM or `--until` finishes the last segment, then builds the
+    report and clips.
+  - Pressing Ctrl+C a second time during that step skips the clips but keeps
+    everything. Finish later with `uv run eyesopenscan analyze out/live-…`.
+  - `--until` accepts `07:30` (the next time it is 07:30), `+8h`, or a full date and time.
+- **Stream dropouts** (Wi-Fi, a camera reboot): it reconnects automatically. The
+  offline periods are listed in `summary.txt` and hatched in `timeline.png`.
+- **Crash safety:** signals are saved every 5 min (`--checkpoint-min`). After a
+  crash or power cut, `uv run eyesopenscan analyze out/live-…` still gives a
+  report from the saved data, with clips from the buffered segments that remain.
+- **Keep the Mac awake.** The tool prevents idle sleep (`caffeinate`), but a
+  MacBook with its **lid closed on battery** still sleeps. Leave it open or plugged in.
+- `pick-roi` also works on a stream: `uv run eyesopenscan pick-roi "rtsp://…"`.
+  The ROIs are in the stream's pixel coordinates.
+
 ## Output (`out/<video>/`)
 
 | file | content |

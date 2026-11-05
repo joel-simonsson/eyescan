@@ -45,6 +45,24 @@ def parse_roi(s: str | None) -> tuple[int, int, int, int] | None:
     return tuple(vals)  # type: ignore[return-value]
 
 
+def parse_until(s: str, now: dt.datetime | None = None) -> dt.datetime:
+    """'07:30' -> next 07:30 from now; '+8h' / '+90m' / '+30s' -> relative;
+    otherwise an ISO datetime ('2026-11-06 07:30')."""
+    now = now or dt.datetime.now()
+    s = s.strip()
+    if s.startswith("+"):
+        units = {"h": 3600, "m": 60, "s": 1}
+        unit = s[-1].lower()
+        if unit not in units:
+            raise ValueError(f"relative --until needs h/m/s suffix: {s!r}")
+        return now + dt.timedelta(seconds=float(s[1:-1]) * units[unit])
+    if len(s) <= 5 and ":" in s:
+        hh, mm = (int(x) for x in s.split(":"))
+        t = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        return t if t > now else t + dt.timedelta(days=1)
+    return dt.datetime.fromisoformat(s)
+
+
 def fmt_time(secs: float) -> str:
     """Seconds -> 'H:MM:SS'."""
     secs = max(0.0, float(secs))
@@ -173,9 +191,11 @@ def iter_frames(
         cap.release()
 
 
-def read_frame_at(path: Path, t: float) -> np.ndarray:
+def read_frame_at(path: Path | str, t: float) -> np.ndarray:
+    """One frame from a file at time t, or the current frame of a stream URL."""
     cap = cv2.VideoCapture(str(path))
-    cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+    if t > 0:
+        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
     ok, img = cap.read()
     cap.release()
     if not ok:

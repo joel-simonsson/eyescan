@@ -50,6 +50,11 @@ def summary_text(
     duration: float,
     eyes: EyeAnalysis | None,
     start_clock: dt.datetime | None,
+    gaps: list | None = None,
+    missing_clips: list[int] | None = None,
+    reconnects: int = 0,
+    note: str = "",
+    status: str = "complete",
 ) -> str:
     L = [
         "eyesopenscan summary",
@@ -59,6 +64,15 @@ def summary_text(
     ]
     if start_clock:
         L.append(f"recording start:  {start_clock:%Y-%m-%d %H:%M:%S}")
+        L.append(f"recording end:    {start_clock + dt.timedelta(seconds=duration):%Y-%m-%d %H:%M:%S}")
+    if status != "complete":
+        L.append("status:           INCOMPLETE - session did not stop cleanly; data up to the last checkpoint")
+    if gaps:
+        offline = sum(e - s for s, e in gaps)
+        L.append(f"stream offline:   {fmt_time(offline)} in {len(gaps)} gap(s), {reconnects} reconnect(s)")
+        for s, e in gaps:
+            when = f"{fmt_clock(start_clock, s)[11:]}-{fmt_clock(start_clock, e)[11:]}" if start_clock else f"{fmt_time(s)}-{fmt_time(e)}"
+            L.append(f"    {when}  ({e - s:.0f} s, nothing analyzed)")
     if eyes is not None:
         L.append(f"face visible:     {eyes.face_frac * 100:.0f}% of the night")
         L.append(f"EAR thresholds:   open > {eyes.open_thr:.3f}, close < {eyes.close_thr:.3f}  [{eyes.thr_source}]")
@@ -84,6 +98,11 @@ def summary_text(
     if len(events) > 1:
         gaps = np.diff(starts) / 60
         L.append(f"time between:     mean {gaps.mean():.1f} min, min {gaps.min():.1f} min, max {gaps.max():.1f} min")
+    if missing_clips:
+        L.append(f"no video for event(s): {', '.join(map(str, missing_clips))} "
+                 "(outside the kept buffer)")
+    if note:
+        L.append(f"clips:            {note}")
     L.append("")
     L.append("High-confidence = eyes open AND strong movement at the same time.")
     L.append("Every event is a candidate for review, not a diagnosis.")
@@ -111,6 +130,7 @@ def timeline_png(
     t_mot: np.ndarray | None,
     motion: MotionAnalysis | None,
     duration: float,
+    gaps: list | None = None,
 ) -> None:
     rows = (eyes is not None) + (motion is not None) + 1
     fig, axes = plt.subplots(rows, 1, figsize=(16, 2.4 * rows), sharex=True, squeeze=False)
@@ -149,7 +169,10 @@ def timeline_png(
     ax.set_ylabel("events")
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in KIND_COLORS.values()]
     ax.legend(handles, ["eyes + motion", "eyes open", "motion"], loc="upper right", fontsize=7, ncol=3)
-    ax.set_xlabel("hours into recording")
+    for a in axes:
+        for gs, ge in gaps or []:
+            a.axvspan(h(gs), h(ge), color="#f2c4c4", alpha=0.5, lw=0, hatch="//")
+    ax.set_xlabel("hours into recording" + ("   (hatched = stream offline)" if gaps else ""))
     ax.set_xlim(0, h(duration) if duration > 0 else None)
     fig.tight_layout()
     fig.savefig(path, dpi=110)
