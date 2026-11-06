@@ -11,12 +11,81 @@ seizures and track how often and how long they happen.
 
 ## Setup
 
+### macOS
+
 ```sh
 brew install ffmpeg uv
 uv sync
 curl -L -o models/face_landmarker.task \
   https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task
+uv run pytest    # quick check that everything works
 ```
+
+### Windows
+
+> Not yet tested on Windows. Everything it uses (Python, MediaPipe, OpenCV,
+> ffmpeg) is cross-platform, but please report any problems.
+
+In PowerShell:
+
+```powershell
+# 1. Tools (open a NEW terminal afterwards so ffmpeg is on PATH)
+winget install astral-sh.uv
+winget install Gyan.FFmpeg
+winget install Git.Git
+
+# 2. Code, dependencies (uv downloads Python 3.12 by itself) and the face model
+git clone <repo-url> eyesopenscan      # or copy the folder, without .venv and out
+cd eyesopenscan
+uv sync
+curl.exe -L -o models\face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task
+uv run pytest    # quick check that everything works
+```
+
+Use `curl.exe`, not `curl`. In Windows PowerShell, `curl` is a different
+command.
+
+All commands in this README work the same on Windows. Only the shell
+syntax differs:
+- Put RTSP URLs in **double quotes**, especially if the password contains
+  `&`, `$` or similar characters.
+- To continue a command on the next line, use a backtick `` ` ``, not `\`.
+  You can also write it all on one line.
+- Paths use `\`, e.g. `uv run eyesopenscan analyze out\live-2026-11-06_2230`.
+
+```powershell
+uv run eyesopenscan live "rtsp://USER:PASS@192.168.1.50:554/stream1" `
+    --face-roi 640,180,700,520 --until 07:30
+```
+
+Differences from macOS:
+- **Sleep is not prevented automatically.** On macOS the tool uses
+  `caffeinate`; on Windows you must disable sleep yourself for the night.
+  Either go to Settings → System → Power → Sleep: *Never* (when plugged in),
+  or run `powercfg /change standby-timeout-ac 0` once. If the PC sleeps, the
+  session stops. The data up to the last checkpoint can still be recovered
+  with `analyze`.
+- **Ctrl+C can take up to about 10 s** to react if the camera happens to be
+  offline at that moment. With a working stream it reacts immediately.
+
+## Hardware requirements
+
+| | Recommendation | Why |
+|---|---|---|
+| **Computer** | 4+ CPU cores, any reasonably modern Intel/AMD or Apple Silicon, 8 GB RAM | Decoding the 1080p stream, plus face analysis 5× per second on the CPU |
+| **GPU** | Not needed | Everything runs on the CPU |
+| **Disk** | A few GB free | Live mode keeps about 5 min of stream plus flagged moments (about 15–30 MB per minute of video, depending on camera bitrate), plus the clips |
+| **Network** | Wired PC-to-router connection if possible; camera with a good Wi-Fi signal | Fewer stream dropouts. Reconnection is automatic, but nothing is analyzed while the stream is down |
+| **Power** | Plugged in, sleep disabled | The computer must stay awake all night |
+| **Camera** | IR night vision, RTSP support, ≥ 1080p main stream (2K is better) | Eye detection needs enough pixels on the face (see *Camera tips*) |
+
+Measured on an M1 Pro MacBook:
+- Live mode kept up with a 1080p stream, with eye analysis less than 0.3 s behind.
+- Recorded files process at roughly 10× real time.
+
+To check whether a slower machine keeps up, watch `eye lag` in the
+status line printed every minute. If it stays under about 1 s, the machine
+is fast enough.
 
 ## Typical workflow
 
@@ -74,8 +143,10 @@ uv run eyesopenscan live "rtsp://USER:PASS@192.168.1.50:554/stream1" \
 - **Crash safety:** signals are saved every 5 min (`--checkpoint-min`). After a
   crash or power cut, `uv run eyesopenscan analyze out/live-…` still gives a
   report from the saved data, with clips from the buffered segments that remain.
-- **Keep the Mac awake.** The tool prevents idle sleep (`caffeinate`), but a
-  MacBook with its **lid closed on battery** still sleeps. Leave it open or plugged in.
+- **Keep the computer awake.** On macOS the tool prevents idle sleep
+  (`caffeinate`), but a MacBook with its **lid closed on battery** still
+  sleeps. Leave it open or plugged in. On Windows you must disable sleep
+  yourself (see *Setup → Windows*).
 - `pick-roi` also works on a stream: `uv run eyesopenscan pick-roi "rtsp://…"`.
   The ROIs are in the stream's pixel coordinates.
 
